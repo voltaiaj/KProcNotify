@@ -6,4 +6,7 @@
   <Project Path="KProcNotify/KProcNotify.vcxproj">
     <Deploy />
   </Project>
+  <Project Path="ProcNotify/ProcNotify.vcxproj" Id="49a394c6-30cd-4e5c-bcbc-a10912c0355b">
+    <Platform Project="x64" />
+  </Project>
 </Solution>
