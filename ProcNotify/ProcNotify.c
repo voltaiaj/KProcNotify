@@ -51,5 +51,26 @@ void DisplayTime(ULONGLONG time)
 }
 
 void DisplayData(const BYTE* buffer, DWORD size) {
+	while (size > 0) {
+		MonitorEvent* event = (MonitorEvent*)buffer;
+		DisplayTime(event->TimeStamp);
+		switch (event->EventType) {
+		case ProcessCreated:
+		{
+			const int commandLineLengthChars = (int)event->Data.ProcessCreated.CommandLineLength;
 
+			wprintf(L"Process Created: PID=%lu, Parent PID=%lu, Command Line=%.*ls\n",
+				event->Data.ProcessCreated.ProcessId,
+				event->Data.ProcessCreated.ParentProcessId,
+				commandLineLengthChars,
+				event->Data.ProcessCreated.CommandLine);
+			break;
+		}
+		default:
+			wprintf(L"Unknown event type: %d\n", event->EventType);
+			break;
+		}
+		buffer += event->Size;
+		size -= event->Size;
+	}
 }
