@@ -67,8 +67,12 @@ NTSTATUS KProcNotifyDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 	UNREFERENCED_PARAMETER(DeviceObject);
 	PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation(Irp);
 	switch (irpSp->Parameters.DeviceIoControl.IoControlCode) {
-		case IOCTL_KPROC_NOTIFY_GET_PROCESS_LIST: {
-			KdPrint((DRIVER_PREFIX "Get Process List\n"));
+		case IOCTL_KPROC_REGISTER_PROCESS_NOTIFY_EVENT: {
+			KdPrint((DRIVER_PREFIX "Register Process Notify Event\n"));
+			break;
+		}
+		case IOCTL_KPROC_READ_PROCESS_NOTIFY: {
+			KdPrint((DRIVER_PREFIX "Read Process Notify\n"));
 			break;
 		}
 	}
