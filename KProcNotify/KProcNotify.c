@@ -4,6 +4,16 @@
 #define DRIVER_TAG 'KPNO'
 #define DRIVER_PREFIX "KProcNotify: "
 
+FAST_MUTEX g_Mutex;
+
+typedef struct _Globals
+{
+	LIST_ENTRY ItemsHead;
+	int ItemCount;
+} Globals;
+
+Globals g_Globals;
+
 VOID DriverUnload(PDRIVER_OBJECT);
 NTSTATUS KProcNotifyCreateClose(PDEVICE_OBJECT, PIRP);
 NTSTATUS KProcNotifyDeviceControl(PDEVICE_OBJECT, PIRP);
@@ -29,6 +39,14 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 			KdPrint((DRIVER_PREFIX "Failed to create symbolic link (0x%08X)\n", status));
 			break;
 		}
+
+		deviceObject->Flags |= DO_BUFFERED_IO;
+
+		InitializeListHead(&g_Globals.ItemsHead);
+		g_Globals.ItemCount = 0;
+
+		ExInitializeFastMutex(&g_Mutex);
+
 
 		DriverObject->DriverUnload = DriverUnload;
 		DriverObject->MajorFunction[IRP_MJ_CREATE] = KProcNotifyCreateClose;
