@@ -1,4 +1,6 @@
 #include <windows.h>
+#include <winioctl.h>
+#include <stdio.h>
 #include "..\KProcNotify\ProcNotifyCommon.h"
 
 void DisplayTime(ULONGLONG);

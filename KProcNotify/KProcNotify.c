@@ -4,6 +4,8 @@
 #define DRIVER_TAG 'KPNO'
 #define DRIVER_PREFIX "KProcNotify: "
 
+#define MAX_EVENTS 0x1024
+
 FAST_MUTEX g_Mutex;
 
 typedef struct _Globals
@@ -14,9 +16,34 @@ typedef struct _Globals
 
 Globals g_Globals;
 
-VOID DriverUnload(PDRIVER_OBJECT);
+typedef struct _MonitorEventFull
+{
+	LIST_ENTRY ListEntry;
+	MonitorEventType EventType;
+	ULONGLONG TimeStamp;
+	USHORT Size;
+	union
+	{
+		ProcessCreatedInfo ProcessCreated;
+	} Data;
+} MonitorEventFull;
+
+void DriverUnload(PDRIVER_OBJECT);
 NTSTATUS KProcNotifyCreateClose(PDEVICE_OBJECT, PIRP);
 NTSTATUS KProcNotifyDeviceControl(PDEVICE_OBJECT, PIRP);
+void ProcessNotifyCallback(PEPROCESS, HANDLE, PPS_CREATE_NOTIFY_INFO);
+void PushToEventQueue(MonitorEventFull*);
+MonitorEvent* PopFromEventQueue();
+MonitorEvent* ConvertMonitorEventFullToMonitorEvent(MonitorEventFull*);
+
+LARGE_INTEGER GetCurrentTime()
+{
+	LARGE_INTEGER currentTime;
+	KeQuerySystemTime(&currentTime);
+	return currentTime;
+}
+
+
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
@@ -47,6 +74,12 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 
 		ExInitializeFastMutex(&g_Mutex);
 
+		status = PsSetCreateProcessNotifyRoutineEx(ProcessNotifyCallback, FALSE);
+		if (!NT_SUCCESS(status)) {
+			KdPrint((DRIVER_PREFIX "Failed to set process notify routine (0x%08X)\n", status));
+			IoDeleteSymbolicLink(&symbolicLinkName);
+			break;
+		}
 
 		DriverObject->DriverUnload = DriverUnload;
 		DriverObject->MajorFunction[IRP_MJ_CREATE] = KProcNotifyCreateClose;
@@ -54,7 +87,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 		DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = KProcNotifyDeviceControl;
 	} while (FALSE);
 	
-	if (!NT_SUCCESS(status)) {
+	if (!NT_SUCCESS(status)) {		
 		if (deviceObject) {
 			IoDeleteDevice(deviceObject);
 		}
@@ -64,8 +97,17 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 	return status;
 }
 
-VOID DriverUnload(PDRIVER_OBJECT DriverObject)
+void DriverUnload(PDRIVER_OBJECT DriverObject)
 {
+	PsSetCreateProcessNotifyRoutineEx(ProcessNotifyCallback, TRUE);
+
+	while (!IsListEmpty(&g_Globals.ItemsHead)) {
+		PLIST_ENTRY entry = RemoveHeadList(&g_Globals.ItemsHead);
+		MonitorEventFull* event = CONTAINING_RECORD(entry, MonitorEventFull, ListEntry);
+		ExFreePool2(event, 'evnt', NULL, 0);
+		g_Globals.ItemCount--;
+	}
+
 	UNICODE_STRING symbolicLinkName = RTL_CONSTANT_STRING(L"\\??\\KProcNotify");
 	IoDeleteSymbolicLink(&symbolicLinkName);
 	IoDeleteDevice(DriverObject->DeviceObject);
@@ -95,4 +137,101 @@ NTSTATUS KProcNotifyDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 		}
 	}
 	return STATUS_SUCCESS;
+}
+
+void ProcessNotifyCallback(PEPROCESS Process, HANDLE ProcessId, PPS_CREATE_NOTIFY_INFO CreateInfo)
+{
+	UNREFERENCED_PARAMETER(Process);
+	KdPrint((DRIVER_PREFIX "ProcessNotifyCallback called\n"));
+	USHORT extraSize = 0;
+	if (CreateInfo && CreateInfo->CommandLine) {
+		extraSize = (USHORT)CreateInfo->CommandLine->Length;
+	}
+
+	MonitorEventFull* event = (MonitorEventFull*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(MonitorEventFull) + extraSize, 'evnt');
+	if (!event) {
+		KdPrint((DRIVER_PREFIX "Failed to allocate memory for Process event\n"));
+		return;
+	}
+
+	if (CreateInfo) {
+		KdPrint((DRIVER_PREFIX "Process created. PID=%p\n", ProcessId));
+		event->EventType = ProcessCreated;
+		event->TimeStamp = GetCurrentTime().QuadPart;
+		event->Size = sizeof(MonitorEventFull) + extraSize;
+		event->Data.ProcessCreated.CreatedTime = GetCurrentTime().QuadPart;
+		event->Data.ProcessCreated.ProcessId = (ULONG)(ULONG_PTR)ProcessId;
+		event->Data.ProcessCreated.ParentProcessId = (ULONG)(ULONG_PTR)CreateInfo->ParentProcessId;
+		if (CreateInfo->CommandLine && CreateInfo->CommandLine->Length > 0) {
+			SIZE_T srcChars = CreateInfo->CommandLine->Length / sizeof(WCHAR);
+			if (srcChars >= MAX_COMMAND_LINE_LENGTH) {
+				srcChars = MAX_COMMAND_LINE_LENGTH - 1;
+			}
+			RtlCopyMemory(event->Data.ProcessCreated.CommandLine, CreateInfo->CommandLine->Buffer, srcChars * sizeof(WCHAR));
+			event->Data.ProcessCreated.CommandLine[srcChars] = L'\0';
+			event->Data.ProcessCreated.CommandLineLength = (ULONG)srcChars;
+		}
+		else {
+			event->Data.ProcessCreated.CommandLine[0] = L'\0';
+			event->Data.ProcessCreated.CommandLineLength = 0;
+		}
+		PushToEventQueue(event);
+	}
+}
+
+void PushToEventQueue(MonitorEventFull* event)
+{
+	ExAcquireFastMutex(&g_Mutex);
+
+	if (g_Globals.ItemCount >= MAX_EVENTS) {
+		KdPrint((DRIVER_PREFIX "Event queue is full. Making room by removing oldest event.\n"));
+		PLIST_ENTRY entry = RemoveHeadList(&g_Globals.ItemsHead);
+		MonitorEventFull* oldEvent = CONTAINING_RECORD(entry, MonitorEventFull, ListEntry);
+		ExFreePoolWithTag(oldEvent, 'evnt');
+		g_Globals.ItemCount--;
+	}
+
+	InsertTailList(&g_Globals.ItemsHead, &event->ListEntry);
+	g_Globals.ItemCount++;
+
+	ExReleaseFastMutex(&g_Mutex);
+}
+
+MonitorEvent* ConvertMonitorEventFullToMonitorEvent(MonitorEventFull* fullEvent)
+{
+	MonitorEvent* event = (MonitorEvent*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(MonitorEvent) + fullEvent->Size - sizeof(MonitorEventFull), 'evnt');
+	if (!event) {
+		KdPrint((DRIVER_PREFIX "Failed to allocate memory for MonitorEvent\n"));
+		return NULL;
+	}
+	event->EventType = fullEvent->EventType;
+	event->TimeStamp = fullEvent->TimeStamp;
+	event->Size = fullEvent->Size;
+	switch (fullEvent->EventType) {
+	case ProcessCreated:
+		event->Data.ProcessCreated = fullEvent->Data.ProcessCreated;
+		SIZE_T cmdBytes = fullEvent->Data.ProcessCreated.CommandLineLength * sizeof(WCHAR);
+		RtlCopyMemory(event->Data.ProcessCreated.CommandLine, fullEvent->Data.ProcessCreated.CommandLine, cmdBytes + sizeof(WCHAR));
+		break;
+	default:
+		KdPrint((DRIVER_PREFIX "Unknown event type: %d\n", fullEvent->EventType));
+		ExFreePoolWithTag(event, 'evnt');
+		return NULL;
+	}
+	return event;
+}
+
+MonitorEvent* PopFromEventQueue()
+{
+	ExAcquireFastMutex(&g_Mutex);
+	MonitorEvent* event = NULL;
+	if (!IsListEmpty(&g_Globals.ItemsHead)) {
+		PLIST_ENTRY entry = RemoveHeadList(&g_Globals.ItemsHead);
+		MonitorEventFull* fullEvent = CONTAINING_RECORD(entry, MonitorEventFull, ListEntry);
+		event = ConvertMonitorEventFullToMonitorEvent(fullEvent);
+		ExFreePoolWithTag(fullEvent, 'evnt');
+		g_Globals.ItemCount--;
+	}
+	ExReleaseFastMutex(&g_Mutex);
+	return event;
 }
