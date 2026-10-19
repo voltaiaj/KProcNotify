@@ -12,6 +12,7 @@ typedef struct _Globals
 {
 	LIST_ENTRY ItemsHead;
 	int ItemCount;
+	HANDLE hProcessNotifyEvent;
 } Globals;
 
 Globals g_Globals;
@@ -113,6 +114,11 @@ void DriverUnload(PDRIVER_OBJECT DriverObject)
 		g_Globals.ItemCount--;
 	}
 
+	if (g_Globals.hProcessNotifyEvent) {
+		ObDereferenceObject(g_Globals.hProcessNotifyEvent);
+		g_Globals.hProcessNotifyEvent = NULL;
+	}
+
 	UNICODE_STRING symbolicLinkName = RTL_CONSTANT_STRING(L"\\??\\KProcNotify");
 	IoDeleteSymbolicLink(&symbolicLinkName);
 	IoDeleteDevice(DriverObject->DeviceObject);
@@ -131,16 +137,20 @@ NTSTATUS KProcNotifyDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
 	UNREFERENCED_PARAMETER(DeviceObject);
 	PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation(Irp);
+	ULONG outputBufferLength = irpSp->Parameters.DeviceIoControl.OutputBufferLength;
 	ULONG written = 0;
+	NTSTATUS status = STATUS_SUCCESS;
 
 	switch (irpSp->Parameters.DeviceIoControl.IoControlCode) {
 		case IOCTL_KPROC_REGISTER_PROCESS_NOTIFY_EVENT: {
 			KdPrint((DRIVER_PREFIX "Register Process Notify Event\n"));
+			HANDLE hEvent = *(HANDLE*)Irp->AssociatedIrp.SystemBuffer;
+			status = ObReferenceObjectByHandle(hEvent, EVENT_MODIFY_STATE, *ExEventObjectType, KernelMode, (PVOID*)&g_Globals.hProcessNotifyEvent, NULL);
 			break;
 		}
 		case IOCTL_KPROC_READ_PROCESS_NOTIFY: {
 			KdPrint((DRIVER_PREFIX "Read Process Notify\n"));
-			ULONG outputBufferLength = irpSp->Parameters.DeviceIoControl.OutputBufferLength;
+			
 
 			MonitorEvent* event;
 			while (outputBufferLength >= sizeof(MonitorEvent)) {
@@ -158,7 +168,7 @@ NTSTATUS KProcNotifyDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 			break;
 		}
 	}
-	return STATUS_SUCCESS;
+	return status;
 }
 
 void ProcessNotifyCallback(PEPROCESS Process, HANDLE ProcessId, PPS_CREATE_NOTIFY_INFO CreateInfo)
