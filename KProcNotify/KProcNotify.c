@@ -51,6 +51,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 	// Set up the driver unload routine
 	NTSTATUS status = STATUS_SUCCESS;
 	PDEVICE_OBJECT deviceObject = NULL;
+	BOOLEAN symbolicLinkCreated = FALSE;
 	do {
 		UNICODE_STRING deviceName = RTL_CONSTANT_STRING(L"\\Device\\KProcNotify");
 
@@ -66,6 +67,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 			KdPrint((DRIVER_PREFIX "Failed to create symbolic link (0x%08X)\n", status));
 			break;
 		}
+		symbolicLinkCreated = TRUE;
 
 		deviceObject->Flags |= DO_BUFFERED_IO;
 
@@ -77,7 +79,6 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 		status = PsSetCreateProcessNotifyRoutineEx(ProcessNotifyCallback, FALSE);
 		if (!NT_SUCCESS(status)) {
 			KdPrint((DRIVER_PREFIX "Failed to set process notify routine (0x%08X)\n", status));
-			IoDeleteSymbolicLink(&symbolicLinkName);
 			break;
 		}
 
@@ -88,6 +89,10 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 	} while (FALSE);
 	
 	if (!NT_SUCCESS(status)) {		
+		if (symbolicLinkCreated) {
+			UNICODE_STRING symbolicLinkName = RTL_CONSTANT_STRING(L"\\??\\KProcNotify");
+			IoDeleteSymbolicLink(&symbolicLinkName);
+		}
 		if (deviceObject) {
 			IoDeleteDevice(deviceObject);
 		}
