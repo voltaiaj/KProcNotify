@@ -12,7 +12,7 @@ typedef struct _Globals
 {
 	LIST_ENTRY ItemsHead;
 	int ItemCount;
-	HANDLE hProcessNotifyEvent;
+	PKEVENT ProcessNotifyEvent;
 } Globals;
 
 Globals g_Globals;
@@ -114,9 +114,9 @@ void DriverUnload(PDRIVER_OBJECT DriverObject)
 		g_Globals.ItemCount--;
 	}
 
-	if (g_Globals.hProcessNotifyEvent) {
-		ObDereferenceObject(g_Globals.hProcessNotifyEvent);
-		g_Globals.hProcessNotifyEvent = NULL;
+	if (g_Globals.ProcessNotifyEvent) {
+		ObDereferenceObject(g_Globals.ProcessNotifyEvent);
+		g_Globals.ProcessNotifyEvent = NULL;
 	}
 
 	UNICODE_STRING symbolicLinkName = RTL_CONSTANT_STRING(L"\\??\\KProcNotify");
@@ -144,8 +144,33 @@ NTSTATUS KProcNotifyDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 	switch (irpSp->Parameters.DeviceIoControl.IoControlCode) {
 		case IOCTL_KPROC_REGISTER_PROCESS_NOTIFY_EVENT: {
 			KdPrint((DRIVER_PREFIX "Register Process Notify Event\n"));
+
+			if (irpSp->Parameters.DeviceIoControl.InputBufferLength < sizeof(HANDLE)) {
+				KdPrint((DRIVER_PREFIX "Input buffer too small for event handle\n"));
+				status = STATUS_BUFFER_TOO_SMALL;
+				break;
+			}
+
 			HANDLE hEvent = *(HANDLE*)Irp->AssociatedIrp.SystemBuffer;
-			status = ObReferenceObjectByHandle(hEvent, EVENT_MODIFY_STATE, *ExEventObjectType, KernelMode, (PVOID*)&g_Globals.hProcessNotifyEvent, NULL);
+			PKEVENT newEvent;
+			status = ObReferenceObjectByHandle(
+				hEvent, 
+				EVENT_MODIFY_STATE, 
+				*ExEventObjectType, 
+				UserMode, 
+				(PVOID*)&newEvent, 
+				NULL);
+			
+			if (NT_SUCCESS(status)) {
+				ExAcquireFastMutex(&g_Mutex);
+				PKEVENT oldEvent = g_Globals.ProcessNotifyEvent;
+				g_Globals.ProcessNotifyEvent = newEvent;
+				ExReleaseFastMutex(&g_Mutex);
+				
+				if (oldEvent) {
+					ObDereferenceObject(oldEvent);
+				}
+			}
 			break;
 		}
 		case IOCTL_KPROC_READ_PROCESS_NOTIFY: {
@@ -225,6 +250,10 @@ void PushToEventQueue(MonitorEventFull* event)
 
 	InsertTailList(&g_Globals.ItemsHead, &event->ListEntry);
 	g_Globals.ItemCount++;
+
+	if (g_Globals.ProcessNotifyEvent) {
+		KeSetEvent(g_Globals.ProcessNotifyEvent, IO_NO_INCREMENT, FALSE);
+	}
 
 	ExReleaseFastMutex(&g_Mutex);
 }
