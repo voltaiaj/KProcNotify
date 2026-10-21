@@ -21,13 +21,50 @@ int main()
 		return 1;
 	}
 
-	DeviceIoControl(hDevice, IOCTL_KPROC_REGISTER_PROCESS_NOTIFY_EVENT, &hEvent, sizeof(hEvent), NULL, 0, NULL, NULL);
+	DWORD bytesReturned;
+	BOOL result = DeviceIoControl(
+		hDevice, 
+		IOCTL_KPROC_REGISTER_PROCESS_NOTIFY_EVENT, 
+		&hEvent, 
+		sizeof(hEvent), 
+		NULL, 
+		0, 
+		NULL, 
+		NULL);
+
+	if (!result) {
+		wprintf(L"Failed to register process notify event (0x%08X)\n", GetLastError());
+		CloseHandle(hEvent);
+		CloseHandle(hDevice);
+		return 1;
+	}
 
 	BYTE buffer[1 << 16];
 	for (;;) {
-		DWORD bytesReturned;
-		WaitForSingleObject(hEvent, INFINITE);
-		DeviceIoControl(hDevice, IOCTL_KPROC_READ_PROCESS_NOTIFY, NULL, 0, buffer, sizeof(buffer), &bytesReturned, NULL);
+		DWORD waitResult = WaitForSingleObject(hEvent, INFINITE);
+		if (waitResult == WAIT_FAILED) {
+			wprintf(L"WaitForSingleObject failed (0x%08X)\n", GetLastError());
+			break;
+		}
+		if (waitResult == WAIT_TIMEOUT) {
+			wprintf(L"WaitForSingleObject timed out\n");
+			continue;
+		}
+		bytesReturned = 0;
+		result = DeviceIoControl(
+			hDevice, 
+			IOCTL_KPROC_READ_PROCESS_NOTIFY, 
+			NULL, 
+			0, 
+			buffer, 
+			sizeof(buffer), 
+			&bytesReturned, 
+			NULL);
+
+		if (!result) {
+			wprintf(L"DeviceIoControl failed (0x%08X)\n", GetLastError());
+			break;
+		}
 
 		if (bytesReturned > 0) 
 			DisplayData((const BYTE*)buffer, bytesReturned);
