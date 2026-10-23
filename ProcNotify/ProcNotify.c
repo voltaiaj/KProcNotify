@@ -92,6 +92,11 @@ void DisplayTime(ULONGLONG time)
 void DisplayData(const BYTE* buffer, DWORD size) {
 	while (size > 0) {
 		MonitorEvent* event = (MonitorEvent*)buffer;
+		if (event->Size < sizeof(MonitorEvent) || event->Size > size) {
+			wprintf(L"Invalid event size: %lu\n", event->Size);
+			break;
+		}
+
 		DisplayTime(event->TimeStamp);
 		switch (event->EventType) {
 		case ProcessCreated:
