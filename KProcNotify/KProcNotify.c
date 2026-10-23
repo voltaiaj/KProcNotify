@@ -193,6 +193,9 @@ NTSTATUS KProcNotifyDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 			break;
 		}
 	}
+	Irp->IoStatus.Status = status;
+	Irp->IoStatus.Information = NT_SUCCESS(status) ? written : 0;
+	IoCompleteRequest(Irp, IO_NO_INCREMENT);
 	return status;
 }
 
