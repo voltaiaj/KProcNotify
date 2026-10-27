@@ -157,7 +157,7 @@ NTSTATUS KProcNotifyDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 				hEvent, 
 				EVENT_MODIFY_STATE, 
 				*ExEventObjectType, 
-				UserMode, 
+				KernelMode, 
 				(PVOID*)&newEvent, 
 				NULL);
 			
